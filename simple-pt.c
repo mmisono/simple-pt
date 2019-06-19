@@ -104,6 +104,39 @@ static bool delay_start;
 static void restart(void);
 static void stop_pt_all(void);
 
+static void set_cr3_filter(void *arg);
+static u64 retrieve_cr3(void);
+
+//https://carteryagemann.com/pid-to-cr3.html
+unsigned long pid_to_cr3(int pid)
+{
+	struct task_struct *task;
+	struct mm_struct *mm;
+	void *cr3_virt;
+	unsigned long cr3_phys;
+
+	task = pid_task(find_vpid(pid), PIDTYPE_PID);
+	
+	if (task == NULL)
+		return 0; // pid has no task_struct
+
+	mm = task->mm;
+
+	// mm can be NULL in some rare cases (e.g. kthreads)
+	// when this happens, we should check active_mm
+	if (mm == NULL) {
+		 mm = task->active_mm;
+	}
+
+	if (mm == NULL)
+		return 0; // this shouldn't happen, but just in case
+
+	cr3_virt = (void *) mm->pgd;
+	cr3_phys = virt_to_phys(cr3_virt);
+
+	return cr3_phys;
+}
+
 static int resync_set(const char *val, const struct kernel_param *kp)
 {
 	int ret = param_set_int(val, kp);
@@ -752,6 +785,14 @@ static long simple_pt_ioctl(struct file *file, unsigned int cmd,
 		if (!ret)
 			ret = put_user(offset, (int *)arg);
 		return ret;
+	}
+	case SIMPLE_PT_SET_CR3: {
+		int pid = arg;
+		u64 cr3 = pid_to_cr3(pid);
+		mutex_lock(&restart_mutex);
+		on_each_cpu(set_cr3_filter, &cr3, 1);
+		mutex_unlock(&restart_mutex);
+		return 0;
 	}
 	default:
 		return -ENOTTY;
